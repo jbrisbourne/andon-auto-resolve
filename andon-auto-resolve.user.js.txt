@@ -1,0 +1,290 @@
+// ==UserScript==
+// @name         Auto-Resolve No Scannable Bin Label Andons
+// @namespace    http://tampermonkey.net/
+// @version      3.3
+// @description  Automatically assigns, views/edits, resolves, and saves No Scannable Bin Label andons on FC Andons EU
+// @match        https://fc-andons-eu.corp.amazon.com/BHX5*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+'use strict';
+
+var TARGET_ANDON = 'No Scannable Bin Label';
+var DELAY_MS = 1000;
+var running = false;
+var stopRequested = false;
+
+function wait(ms) {
+    return new Promise(function(resolve) {
+        setTimeout(resolve, ms);
+    });
+}
+
+function findButtonByText(text) {
+    var elements = document.querySelectorAll('button, a, input[type="button"], input[type="submit"]');
+    for (var i = 0; i < elements.length; i++) {
+        if (elements[i].textContent.trim().toLowerCase().indexOf(text.toLowerCase()) !== -1) {
+            return elements[i];
+        }
+    }
+    return null;
+}
+
+function waitForButton(text, timeout) {
+    timeout = timeout || 10000;
+    return new Promise(function(resolve, reject) {
+        var btn = findButtonByText(text);
+        if (btn) return resolve(btn);
+
+        var observer = new MutationObserver(function() {
+            var el = findButtonByText(text);
+            if (el) {
+                observer.disconnect();
+                resolve(el);
+            }
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        setTimeout(function() {
+            observer.disconnect();
+            reject(new Error('Button not found'));
+        }, timeout);
+    });
+}
+
+function findCheckboxByLabel(labelText) {
+    var labels = document.querySelectorAll('.awsui-checkbox-label, [awsui-checkbox-region="label"]');
+    for (var i = 0; i < labels.length; i++) {
+        if (labels[i].textContent.trim().toLowerCase().indexOf(labelText.toLowerCase()) !== -1) {
+            var wrapper = labels[i].closest('.awsui-checkbox') || labels[i].parentElement;
+            if (wrapper) {
+                var clickTarget = wrapper.querySelector('input') || wrapper.querySelector('.awsui-checkbox-control') || wrapper;
+                return clickTarget;
+            }
+            return labels[i];
+        }
+    }
+    return null;
+}
+
+function waitForCheckbox(labelText, timeout) {
+    timeout = timeout || 10000;
+    return new Promise(function(resolve, reject) {
+        var cb = findCheckboxByLabel(labelText);
+        if (cb) return resolve(cb);
+
+        var observer = new MutationObserver(function() {
+            var el = findCheckboxByLabel(labelText);
+            if (el) {
+                observer.disconnect();
+                resolve(el);
+            }
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        setTimeout(function() {
+            observer.disconnect();
+            reject(new Error('Checkbox not found'));
+        }, timeout);
+    });
+}
+
+function findTargetAndonRows() {
+    var rows = document.querySelectorAll('tr');
+    var matches = [];
+    for (var i = 0; i < rows.length; i++) {
+        if (rows[i].textContent.indexOf(TARGET_ANDON) !== -1) {
+            matches.push(rows[i]);
+        }
+    }
+    return matches;
+}
+
+async function processAndon(row) {
+    if (stopRequested) return false;
+
+    console.log('[Andon Script] Processing andon row...');
+
+    // Step 1: Assign
+    console.log('[Andon Script] Step 1: Assigning...');
+    var allRowBtns = row.querySelectorAll('button, a, input[type="button"]');
+    var assigned = false;
+
+    for (var i = 0; i < allRowBtns.length; i++) {
+        if (allRowBtns[i].textContent.trim().toLowerCase().indexOf('assign') !== -1) {
+            allRowBtns[i].click();
+            assigned = true;
+            console.log('[Andon Script] Assigned.');
+            break;
+        }
+    }
+
+    if (!assigned) {
+        var globalAssign = findButtonByText('assign');
+        if (globalAssign) {
+            globalAssign.click();
+            assigned = true;
+            console.log('[Andon Script] Assigned (global button).');
+        }
+    }
+
+    if (!assigned) {
+        console.log('[Andon Script] Could not find Assign button. Skipping.');
+        return false;
+    }
+
+    await wait(DELAY_MS);
+    if (stopRequested) return false;
+
+    // Step 2: View/Edit Andon
+    console.log('[Andon Script] Step 2: Opening View/Edit...');
+    var viewEditBtn = findButtonByText('view');
+    if (!viewEditBtn) viewEditBtn = findButtonByText('edit');
+
+    if (viewEditBtn) {
+        viewEditBtn.click();
+        console.log('[Andon Script] Opened View/Edit.');
+    } else {
+        console.log('[Andon Script] Could not find View/Edit button. Skipping.');
+        return false;
+    }
+
+    await wait(DELAY_MS);
+    if (stopRequested) return false;
+
+    // Step 3: Tick the Resolved checkbox (awsui component)
+    console.log('[Andon Script] Step 3: Ticking Resolved checkbox...');
+    try {
+        var resolvedCheckbox = await waitForCheckbox('resolved');
+        resolvedCheckbox.click();
+        console.log('[Andon Script] Resolved checkbox ticked.');
+    } catch (e) {
+        console.log('[Andon Script] Could not find Resolved checkbox. Skipping.');
+        return false;
+    }
+
+    await wait(DELAY_MS);
+    if (stopRequested) return false;
+
+    // Step 4: Save Changes
+    console.log('[Andon Script] Step 4: Saving changes...');
+    try {
+        var saveBtn = await waitForButton('save');
+        saveBtn.click();
+        console.log('[Andon Script] Saved changes.');
+    } catch (e) {
+        console.log('[Andon Script] Could not find Save button. Skipping.');
+        return false;
+    }
+
+    await wait(DELAY_MS);
+    console.log('[Andon Script] Andon fully processed!');
+    return true;
+}
+
+async function processAllAndons() {
+    console.log('[Andon Script] Scanning for No Scannable Bin Label andons...');
+
+    var rows = findTargetAndonRows();
+    console.log('[Andon Script] Found ' + rows.length + ' matching andon(s).');
+
+    if (rows.length === 0) {
+        alert('No "No Scannable Bin Label" andons found on this page.');
+        updateButton('start');
+        running = false;
+        return;
+    }
+
+    var successCount = 0;
+    var failCount = 0;
+
+    for (var i = 0; i < rows.length; i++) {
+        if (stopRequested) {
+            console.log('[Andon Script] Stopped by user.');
+            break;
+        }
+
+        try {
+            var success = await processAndon(rows[i]);
+            if (success) {
+                successCount++;
+            } else {
+                failCount++;
+            }
+        } catch (error) {
+            console.log('[Andon Script] Error: ' + error.message);
+            failCount++;
+        }
+
+        await wait(DELAY_MS);
+    }
+
+    if (!stopRequested) {
+        alert('Finished! Processed: ' + successCount + ' Failed: ' + failCount);
+    }
+
+    updateButton('start');
+    running = false;
+    stopRequested = false;
+}
+
+function updateButton(state) {
+    var btn = document.getElementById('andon-auto-resolve-btn');
+    if (!btn) return;
+
+    if (state === 'start') {
+        btn.textContent = 'Start Auto-Resolve';
+        btn.style.backgroundColor = '#FF9900';
+        btn.style.color = '#000';
+    } else {
+        btn.textContent = 'Stop Auto-Resolve';
+        btn.style.backgroundColor = '#cc0000';
+        btn.style.color = '#fff';
+    }
+}
+
+function toggleScript() {
+    if (running) {
+        stopRequested = true;
+        updateButton('start');
+        running = false;
+        console.log('[Andon Script] Stop requested.');
+    } else {
+        running = true;
+        stopRequested = false;
+        updateButton('stop');
+        processAllAndons();
+    }
+}
+
+function addTriggerButton() {
+    var btn = document.createElement('button');
+    btn.id = 'andon-auto-resolve-btn';
+    btn.textContent = 'Start Auto-Resolve';
+    btn.style.position = 'fixed';
+    btn.style.top = '80px';
+    btn.style.right = '10px';
+    btn.style.zIndex = '9999';
+    btn.style.padding = '12px 18px';
+    btn.style.backgroundColor = '#FF9900';
+    btn.style.color = '#000';
+    btn.style.border = 'none';
+    btn.style.borderRadius = '5px';
+    btn.style.cursor = 'pointer';
+    btn.style.fontWeight = 'bold';
+    btn.style.fontSize = '14px';
+    btn.style.boxShadow = '0 2px 5px rgba(0,0,0,0.3)';
+    btn.addEventListener('click', toggleScript);
+    document.body.appendChild(btn);
+}
+
+if (document.readyState === 'complete') {
+    addTriggerButton();
+} else {
+    window.addEventListener('load', addTriggerButton);
+}
+
+})();
