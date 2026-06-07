@@ -5,6 +5,8 @@
 // @description  Automatically assigns, views/edits, resolves, and saves No Scannable Bin Label andons on FC Andons EU
 // @match        https://fc-andons-eu.corp.amazon.com/BHX5*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/jbrisbourne/andon-auto-resolve/main/andon-auto-resolve.user.js
+// @downloadURL  https://raw.githubusercontent.com/jbrisbourne/andon-auto-resolve/main/andon-auto-resolve.user.js
 // ==/UserScript==
 
 (function() {
