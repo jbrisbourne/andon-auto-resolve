@@ -1,8 +1,9 @@
+
 // ==UserScript==
 // @name         Auto-Resolve No Scannable Bin Label Andons
 // @namespace    http://tampermonkey.net/
-// @version      3.3
-// @description  Automatically assigns, views/edits, resolves, and saves No Scannable Bin Label andons on FC Andons EU
+// @version      4.0
+// @description  Automatically assigns, views/edits, resolves, and saves No Scannable Bin Label andons on FC Andons EU (Optimized for speed)
 // @match        https://fc-andons-eu.corp.amazon.com/BHX5*
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/jbrisbourne/andon-auto-resolve/main/andon-auto-resolve.user.js
@@ -13,7 +14,8 @@
 'use strict';
 
 var TARGET_ANDON = 'No Scannable Bin Label';
-var DELAY_MS = 1000;
+var DELAY_MS = 300; // Reduced from 1000ms to 300ms
+var POLL_INTERVAL = 50; // Fast polling interval for element detection
 var running = false;
 var stopRequested = false;
 
@@ -34,25 +36,22 @@ function findButtonByText(text) {
 }
 
 function waitForButton(text, timeout) {
-    timeout = timeout || 10000;
+    timeout = timeout || 5000; // Reduced from 10000ms to 5000ms
     return new Promise(function(resolve, reject) {
         var btn = findButtonByText(text);
         if (btn) return resolve(btn);
 
-        var observer = new MutationObserver(function() {
+        var startTime = Date.now();
+        var interval = setInterval(function() {
             var el = findButtonByText(text);
             if (el) {
-                observer.disconnect();
+                clearInterval(interval);
                 resolve(el);
+            } else if (Date.now() - startTime > timeout) {
+                clearInterval(interval);
+                reject(new Error('Button "' + text + '" not found'));
             }
-        });
-
-        observer.observe(document.body, { childList: true, subtree: true });
-
-        setTimeout(function() {
-            observer.disconnect();
-            reject(new Error('Button not found'));
-        }, timeout);
+        }, POLL_INTERVAL);
     });
 }
 
@@ -72,25 +71,37 @@ function findCheckboxByLabel(labelText) {
 }
 
 function waitForCheckbox(labelText, timeout) {
-    timeout = timeout || 10000;
+    timeout = timeout || 5000; // Reduced from 10000ms to 5000ms
     return new Promise(function(resolve, reject) {
         var cb = findCheckboxByLabel(labelText);
         if (cb) return resolve(cb);
 
-        var observer = new MutationObserver(function() {
+        var startTime = Date.now();
+        var interval = setInterval(function() {
             var el = findCheckboxByLabel(labelText);
             if (el) {
-                observer.disconnect();
+                clearInterval(interval);
                 resolve(el);
+            } else if (Date.now() - startTime > timeout) {
+                clearInterval(interval);
+                reject(new Error('Checkbox "' + labelText + '" not found'));
             }
-        });
+        }, POLL_INTERVAL);
+    });
+}
 
-        observer.observe(document.body, { childList: true, subtree: true });
-
-        setTimeout(function() {
-            observer.disconnect();
-            reject(new Error('Checkbox not found'));
-        }, timeout);
+// Wait for an element to disappear (e.g., modal closing after save)
+function waitForElementToDisappear(selector, timeout) {
+    timeout = timeout || 3000;
+    return new Promise(function(resolve) {
+        var startTime = Date.now();
+        var interval = setInterval(function() {
+            var el = document.querySelector(selector);
+            if (!el || Date.now() - startTime > timeout) {
+                clearInterval(interval);
+                resolve();
+            }
+        }, POLL_INTERVAL);
     });
 }
 
@@ -111,7 +122,6 @@ async function processAndon(row) {
     console.log('[Andon Script] Processing andon row...');
 
     // Step 1: Assign
-    console.log('[Andon Script] Step 1: Assigning...');
     var allRowBtns = row.querySelectorAll('button, a, input[type="button"]');
     var assigned = false;
 
@@ -119,7 +129,6 @@ async function processAndon(row) {
         if (allRowBtns[i].textContent.trim().toLowerCase().indexOf('assign') !== -1) {
             allRowBtns[i].click();
             assigned = true;
-            console.log('[Andon Script] Assigned.');
             break;
         }
     }
@@ -129,7 +138,6 @@ async function processAndon(row) {
         if (globalAssign) {
             globalAssign.click();
             assigned = true;
-            console.log('[Andon Script] Assigned (global button).');
         }
     }
 
@@ -142,47 +150,43 @@ async function processAndon(row) {
     if (stopRequested) return false;
 
     // Step 2: View/Edit Andon
-    console.log('[Andon Script] Step 2: Opening View/Edit...');
     var viewEditBtn = findButtonByText('view');
     if (!viewEditBtn) viewEditBtn = findButtonByText('edit');
 
     if (viewEditBtn) {
         viewEditBtn.click();
-        console.log('[Andon Script] Opened View/Edit.');
     } else {
         console.log('[Andon Script] Could not find View/Edit button. Skipping.');
         return false;
     }
 
-    await wait(DELAY_MS);
     if (stopRequested) return false;
 
-    // Step 3: Tick the Resolved checkbox (awsui component)
-    console.log('[Andon Script] Step 3: Ticking Resolved checkbox...');
+    // Step 3: Tick the Resolved checkbox (no fixed delay - wait for element)
     try {
         var resolvedCheckbox = await waitForCheckbox('resolved');
         resolvedCheckbox.click();
-        console.log('[Andon Script] Resolved checkbox ticked.');
     } catch (e) {
         console.log('[Andon Script] Could not find Resolved checkbox. Skipping.');
         return false;
     }
 
-    await wait(DELAY_MS);
+    await wait(150); // Minimal delay for UI state update
     if (stopRequested) return false;
 
     // Step 4: Save Changes
-    console.log('[Andon Script] Step 4: Saving changes...');
     try {
         var saveBtn = await waitForButton('save');
         saveBtn.click();
-        console.log('[Andon Script] Saved changes.');
     } catch (e) {
         console.log('[Andon Script] Could not find Save button. Skipping.');
         return false;
     }
 
-    await wait(DELAY_MS);
+    // Wait for modal/dialog to close rather than fixed delay
+    await waitForElementToDisappear('[class*="modal"], [class*="dialog"], [class*="drawer"]', 3000);
+    await wait(200); // Small buffer for DOM to settle
+
     console.log('[Andon Script] Andon fully processed!');
     return true;
 }
@@ -220,8 +224,7 @@ async function processAllAndons() {
             console.log('[Andon Script] Error: ' + error.message);
             failCount++;
         }
-
-        await wait(DELAY_MS);
+        // No extra delay between andons - processAndon already waits for completion
     }
 
     if (!stopRequested) {
@@ -290,3 +293,4 @@ if (document.readyState === 'complete') {
 }
 
 })();
+
